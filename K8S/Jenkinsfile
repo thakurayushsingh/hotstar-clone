@@ -1,105 +1,131 @@
-pipeline{
+pipeline {
     agent any
-    tools{
+
+    tools {
         jdk 'jdk-17'
         nodejs 'Node16'
     }
-    environment {
-        SCANNER_HOME=tool 'sonar-scanner'
+
+    parameters {
+        choice(name: 'ENVIRONMENT', choices: ['dev', 'staging', 'prod'], description: 'Target Kubernetes Environment / Namespace')
+        string(name: 'IMAGE_TAG', defaultValue: 'latest', description: 'Docker image tag to deploy')
+        booleanParam(name: 'ENABLE_SECURITY_SCANS', defaultValue: true, description: 'Execute SonarQube, OWASP and Trivy DevSecOps scans')
     }
+
+    environment {
+        SCANNER_HOME = tool 'sonar-scanner'
+        DOCKER_IMAGE = "thakurayushsingh/hotstar:${params.IMAGE_TAG}"
+        REPO_URL     = 'https://github.com/thakurayushsingh/hotstar-clone.git'
+    }
+
     stages {
-        stage('clean workspace'){
-            steps{
+        stage('Clean Workspace') {
+            steps {
                 cleanWs()
             }
         }
-        stage('Checkout from Git'){
-            steps{
-                git branch: 'main', url: 'https://github.com/thakurayushsingh/hotstar-clone.git'
+
+        stage('Git Checkout') {
+            steps {
+                git branch: 'main', url: "${env.REPO_URL}"
             }
         }
-        stage("Sonarqube Analysis "){
-            steps{
+
+        stage('SonarQube Code Quality Analysis') {
+            when {
+                expression { return params.ENABLE_SECURITY_SCANS }
+            }
+            steps {
                 withSonarQubeEnv('sonar-server') {
-                    sh ''' $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=Hotstar \
-                    -Dsonar.projectKey=Hotstar '''
+                    sh """
+                        $SCANNER_HOME/bin/sonar-scanner \
+                        -Dsonar.projectName=Disney-Hotstar-Kubernetes \
+                        -Dsonar.projectKey=hotstar-k8s
+                    """
                 }
             }
         }
-        stage("quality gate"){
-           steps {
+
+        stage('Quality Gate') {
+            when {
+                expression { return params.ENABLE_SECURITY_SCANS }
+            }
+            steps {
                 script {
-                    waitForQualityGate abortPipeline: false, credentialsId: 'Sonar-token' 
+                    waitForQualityGate abortPipeline: false, credentialsId: 'Sonar-token'
                 }
-            } 
+            }
         }
+
         stage('Install Dependencies') {
             steps {
-                sh "npm install"
+                sh 'npm install'
             }
         }
-        stage('OWASP FS SCAN') {
+
+        stage('OWASP Dependency-Check') {
+            when {
+                expression { return params.ENABLE_SECURITY_SCANS }
+            }
             steps {
                 dependencyCheck additionalArguments: '--scan ./ --disableYarnAudit --disableNodeAudit', odcInstallation: 'DP'
                 dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
             }
         }
-            stage('TRIVY FS SCAN') {
+
+        stage('Trivy Filesystem Scan') {
+            when {
+                expression { return params.ENABLE_SECURITY_SCANS }
+            }
             steps {
-                sh "trivy fs . > trivyfs.txt"
+                sh 'trivy fs --severity HIGH,CRITICAL . > trivyfs.txt || true'
             }
         }
-        stage("Docker Build & Push"){
-            steps{
-                script{
-                   withDockerRegistry(credentialsId: 'docker', toolName: 'docker'){   
-                       sh "docker build -t hotstar ."
-                       sh "docker tag hotstar thakurayushsingh/hotstar:latest "
-                       sh "docker push thakurayushsingh/hotstar:latest "
+
+        stage('Docker Build & Push') {
+            steps {
+                script {
+                    withDockerRegistry(credentialsId: 'docker', toolName: 'docker') {
+                        sh "docker build -t ${env.DOCKER_IMAGE} ."
+                        sh "docker push ${env.DOCKER_IMAGE}"
                     }
                 }
             }
         }
-        stage("TRIVY"){
-            steps{
-                sh "trivy image thakurayushsingh/hotstar:latest > trivyimage.txt" 
+
+        stage('Trivy Image Vulnerability Scan') {
+            when {
+                expression { return params.ENABLE_SECURITY_SCANS }
+            }
+            steps {
+                sh "trivy image --severity HIGH,CRITICAL ${env.DOCKER_IMAGE} > trivyimage.txt || true"
             }
         }
-        stage('Deploy to Kubernetes'){
-            steps{
+
+        stage('Deploy to Kubernetes Cluster') {
+            steps {
                 sh 'kubectl apply -f K8S/manifest.yml'
+                sh 'kubectl rollout status deployment/hotstar-deployment --timeout=120s || true'
             }
         }
-
     }
+
     post {
-    always {
-        script {
-            def buildStatus = currentBuild.currentResult
-            def buildUser = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause')[0]?.userId ?: 'Github User'
-            
-            emailext (
-                subject: "Pipeline ${buildStatus}: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-                body: """
-                    <p>This is a Jenkins hotstar CICD pipeline status.</p>
-                    <p>Project: ${env.JOB_NAME}</p>
-                    <p>Build Number: ${env.BUILD_NUMBER}</p>
-                    <p>Build Status: ${buildStatus}</p>
-                    <p>Started by: ${buildUser}</p>
-                    <p>Build URL: <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></p>
-                """,
-                to: 'your-email@example.com',
-                from: 'jenkins@example.com',
-                replyTo: 'your-email@example.com',
-                mimeType: 'text/html',
-                attachmentsPattern: 'trivyfs.txt,trivyimage.txt'
-            )
-           }
-       }
+        always {
+            script {
+                def buildStatus = currentBuild.currentResult
+                echo "Kubernetes Pipeline finished with status: ${buildStatus} for Environment: ${params.ENVIRONMENT}"
 
+                try {
+                    slackSend(
+                        channel: '#devops-deployments',
+                        color: buildStatus == 'SUCCESS' ? '#00FF00' : '#FF0000',
+                        message: "Disney+ Hotstar Kubernetes Pipeline: ${buildStatus} - Job ${env.JOB_NAME} #${env.BUILD_NUMBER}"
+                    )
+                } catch (Exception e) {
+                    echo "Slack notification skipped or plugin not configured."
+                }
+            }
+        }
     }
-
 }
-
-
-

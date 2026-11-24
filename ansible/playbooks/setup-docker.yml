@@ -1,0 +1,46 @@
+---
+- name: Install and Configure Docker on Managed Nodes
+  hosts: managed_nodes
+  become: true
+  tasks:
+    - name: Update apt package cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install required prerequisites
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - software-properties-common
+          - gnupg
+          - lsb-release
+        state: present
+
+    - name: Install Docker
+      apt:
+        name: docker.io
+        state: present
+
+    - name: Ensure Docker service is started and enabled
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Add ubuntu and jenkins users to docker group
+      user:
+        name: "{{ item }}"
+        groups: docker
+        append: yes
+      loop:
+        - ubuntu
+        - jenkins
+      ignore_errors: yes
+
+    - name: Set permissions for Docker socket
+      file:
+        path: /var/run/docker.sock
+        mode: '0666'
