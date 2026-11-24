@@ -1,10 +1,6 @@
 # Disney+ Hotstar Clone: End-to-End DevSecOps Deployment
 
-> **Course**: INT 333 - DEVOPS ADVANCE CONFIGURATION MANAGEMENT  
-> **Institution**: Lovely Professional University  
-> **Student Name**: Ram Singh Yadav  
-> **Registration Number**: 12307974 | **Roll No**: 10 | **Section**: K2O  
-> **Repository**: [https://github.com/thakurayushsingh/hotstar-clone.git](https://github.com/thakurayushsingh/hotstar-clone.git)
+
 
 ---
 
